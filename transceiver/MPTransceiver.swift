@@ -150,17 +150,33 @@ public class MPTransceiver: NSObject {
     /// Sends a Codable object and type to all connected peers.
     /// - Parameters:
     ///     - object: Any to send to all connected peers.
-    ///     - type: Type of data (UInt32) sent
-    /// After sending the data, you can use the extension for Data, `convertData()` to convert it back into data.
-    public func send(_ object: Any, header: [String:Any] = [:]) {
+    ///     - header: An optional dictionary for any packet metadata apart from the payload
+    public func send(_ object: Any, to receiver: MPTPeer? = nil, header: [String:Any] = [:]) {
         if isConnected {
             do {
                 let packet: [Any] = [object, header]
-                let item = NSKeyedArchiver.archivedData(withRootObject: packet)
-                try session.send(item, toPeers: session.connectedPeers, with: MCSessionSendDataMode.reliable)
+                let receivers = (receiver != nil) ? [receiver!.peerID] : session.connectedPeers
+                let item = try NSKeyedArchiver.archivedData(withRootObject: packet,
+                                                            requiringSecureCoding: false)
+                try session.send(item, toPeers: receivers, with: MCSessionSendDataMode.reliable)
             } catch let error {
                 printDebug(error.localizedDescription)
             }
+        }
+    }
+
+    public func broadcastResource(at url: URL, withName name: String,
+                             withCompletionHandler cb: ((Error?) -> Void)?) {
+        for p in connectedPeers {
+            sendResource(at: url, withName: name, toPeer: p, withCompletionHandler: cb)
+        }
+    }
+
+    public func sendResource(at url: URL, withName name: String, toPeer peer: MPTPeer,
+                             withCompletionHandler cb: ((Error?) -> Void)?) {
+        if session.connectedPeers.contains(peer.peerID) {
+            session.sendResource(at: url, withName: name, toPeer: peer.peerID,
+                                 withCompletionHandler: cb)
         }
     }
 
@@ -201,11 +217,7 @@ extension MPTransceiver: MCNearbyServiceBrowserDelegate {
         printDebug("Found peer: \(peerID)")
 
         // Update the list of available peers
-        if let old = peers[peerID] {
-            print("STRANGE", old, #function)
-        }
         peers[peerID] = MPTPeer(peerID: peerID, state: .notConnected, info: info)
-
         browser.invitePeer(peerID, to: session, withContext: nil, timeout: connectionTimeout)
     }
 
@@ -238,8 +250,10 @@ extension MPTransceiver: MCSessionDelegate {
     /// Received data, update delegate didRecieveData
     public func session(_ session: MCSession, didReceive data: Data, fromPeer peerID: MCPeerID) {
         printDebug("Received data: \(data.count) bytes")
-
-        guard let packet = NSKeyedUnarchiver.unarchiveObject(with: data) as? [Any] else { return }
+//        guard let packet = try? NSKeyedUnarchiver.unarchiveTopLevelObjectWithData(data) as? [Any]
+//            else { return }
+        guard let packet = try? NSKeyedUnarchiver.unarchiveTopLevelObjectWithData(data) as! [Any]
+            else { return }
         guard let payload = packet.first else { return }
         guard let header = packet[1] as? [String:Any] else { return }
 
